@@ -1,0 +1,119 @@
+- name: build
+  steps:
+   - name: Download
+     action: S3Download
+     inputs:
+      - source: s3://mybucket/app.tar.gz
+        destination: /tmp/app.tar.gz
+
+{
+    "type": "shell",
+    "inline": [
+        "yum update -y"
+     ]
+},
+{
+    "type": "shell",
+    "script": "./scan.sh"
+}
+
+{
+    "type": "ansible",
+    "playbook_file": "./example-playbook.yml"
+}
+
+"builders": [
+        {
+            "ami_name": "packer-linux-aws-demo-{{timestamp}}",
+            "instance_type": "t3.micro",
+            "region": "us-east-1",
+            "source_ami_filter": {
+                "filters": {
+                "virtualization-type": "hvm",
+                "name": "amzn-ami-hvm-????.??.?.x86_64-gp2",
+                "root-device-type": "ebs"
+            },
+              "owners": ["123456789012"],
+              "most_recent": true
+            },
+            "ssh_username": "ec2-user",
+            "type": "amazon-ebs"
+        }
+        
+phases:
+  - name: build
+    steps:
+      - name: InstallAnsible
+        action: ExecuteBash
+        inputs:
+          commands:
+           - sudo amazon-linux-extras install -y ansible2
+      - name: DownloadPlaybook
+        action: S3Download
+        inputs:
+          - source: 's3://mybucket/playbooks/example-playbook.yml'
+            destination: '/tmp/example-playbook.yml'
+      - name: InvokeAnsible
+        action: ExecuteBinary
+        inputs:
+          path: ansible-playbook
+          arguments:
+            - '{{ build.DownloadPlaybook.inputs[0].destination }}'
+      - name: DeletePlaybook
+        action: ExecuteBash
+        inputs:
+          commands:
+            - rm '{{ build.DownloadPlaybook.inputs[0].destination }}'
+For a more detailed explanation, refer to this post: Executing Ansible playbooks in your Amazon EC2 Image Builder pipeline.
+
+Chef Client Provisioner
+The Chef Client Packer provisioner installs and configures software on machines built by Packer using chef-client. Packer configures a Chef client to communicate to a remote Chef Server to provision the image. In Image Builder, the host executing the recipe is also the host that must be configured as a Chef Server. Chef client is installed and run-in local mode to execute recipe.
+
+Below is an example of Packer executing a Chef recipe. In Image Builder, we first install Chef, then download a recipe from an Amazon S3 bucket, and finally perform a cleanup at the end.
+
+Packer’s Chef Client Provisioner:
+"provisioners":[{
+  "type": "chef-client",
+  "server_url":"https://mychefserver.com/",
+  "run_list": "{{user `chef_run_list`}}"
+}]
+Image Builder’s chef client:
+
+phases:
+  - name: build
+    steps:
+      - name: InstallChefClient
+        action: ExecuteBash
+        inputs:
+          commands:
+            - |
+              if [ -x "$(command -v chef-client)" ]; then
+                echo "Chef is already installed."
+              else
+                SOURCE=https://omnitruck.chef.io/install.sh
+                SCRIPT=/tmp/chef_install.sh
+                echo "Installing Chef using the installation script '$SOURCE'"
+                curl -s -L $SOURCE -o $SCRIPT
+                chmod u+x $SCRIPT
+                sudo $SCRIPT -c stable
+                rm $SCRIPT
+              fi
+      - name: DownloadRecipe
+        action: S3Download
+        inputs:
+          - source: s3://<enter_s3_bucket_name_here>/<enter_s3_object_key_here>
+            destination: /tmp/recipe.rb
+      - name: ApplyRecipe
+        action: ExecuteBinary
+        inputs:
+          path: chef-client
+          arguments:
+            - '--local-mode'
+            - '{{ build.DownloadRecipe.inputs[0].destination }}'
+            - '--chef-license'
+            - 'accept-no-persist'
+      - name: DeleteRecipe
+        action: ExecuteBash
+        inputs:
+          commands:
+            - rm {{ build.DownloadRecipe.inputs[0].destination }}
